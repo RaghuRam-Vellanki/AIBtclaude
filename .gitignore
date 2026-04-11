@@ -1,0 +1,17 @@
+# API keys — never commit these
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Logs (can be large)
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

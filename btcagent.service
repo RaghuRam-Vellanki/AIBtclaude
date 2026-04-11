@@ -1,0 +1,23 @@
+# systemd service — auto-starts bot on reboot and restarts on crash
+# Install: sudo cp btcagent.service /etc/systemd/system/
+#          sudo systemctl enable btcagent
+#          sudo systemctl start btcagent
+
+[Unit]
+Description=BTC/USD Institutional Trading Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/xauusdagent
+ExecStart=/home/ubuntu/xauusdagent/venv/bin/python agent.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/ubuntu/xauusdagent/logs/agent.log
+StandardError=append:/home/ubuntu/xauusdagent/logs/agent.log
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
