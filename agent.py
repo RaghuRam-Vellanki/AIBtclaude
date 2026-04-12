@@ -25,7 +25,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from config import ANALYSIS_INTERVAL_SECONDS, PAPER_MODE, SYMBOL
+from config import (
+    ANALYSIS_INTERVAL_SECONDS, PAPER_MODE, SYMBOL,
+    REQUIRE_APPROVAL, APPROVAL_TIMEOUT_SEC, PENDING_FILE, BOT_PID_FILE,
+)
 from modules.data_feed import DataFeed
 from modules.order_manager import OrderManager
 from modules.risk_manager import RiskManager
@@ -66,6 +69,9 @@ class BTCTradingAgent:
         logger.info("BTC/USD Institutional Trading Agent")
         logger.info("Mode: %s", "PAPER" if PAPER_MODE else "LIVE")
         logger.info("=" * 60)
+        # Write PID so dashboard can stop/manage this process
+        import os as _os
+        BOT_PID_FILE.write_text(str(_os.getpid()))
 
         # Modules
         self._data_feed       = DataFeed(on_bar_callback=self._on_bar)
@@ -90,6 +96,7 @@ class BTCTradingAgent:
         self._state_file          = Path("logs/state.json")
 
         logger.info("Account value: $%.2f", account_value)
+        self._write_state("starting")
 
         # Close any leftover open BTC position from a previous run
         existing = self._order_manager.get_open_position()
@@ -248,6 +255,20 @@ class BTCTradingAgent:
             "Placing order: %s %.6f BTC @ $%.2f (SL $%.2f, TP1 $%.2f)",
             signal.bias, pos_size, signal.entry_price, signal.stop_loss, signal.take_profit_1,
         )
+
+        # ── Approval gate ─────────────────────────────────────────────────────
+        if REQUIRE_APPROVAL:
+            self._write_pending_signal(signal, pos_size)
+            self._write_state("awaiting_approval")
+            logger.info("Waiting for dashboard approval (timeout %ds)...", APPROVAL_TIMEOUT_SEC)
+            approved = self._wait_for_approval()
+            if not approved:
+                logger.info("Signal not approved — skipping trade")
+                self._clear_pending_signal()
+                self._write_state()
+                return
+            logger.info("Trade approved by user — executing")
+            self._clear_pending_signal()
 
         # Place order
         order_id = self._order_manager.place_order(signal, pos_size)
@@ -408,6 +429,63 @@ class BTCTradingAgent:
             "last_trade_result":    self._trade_logger.last_trade_result(),
             "account_value":        round(self._risk_manager.account_value, 2),
         }
+
+    # ── Approval helpers ──────────────────────────────────────────────────────
+
+    def _write_pending_signal(self, signal, pos_size: float) -> None:
+        """Write pending signal to file so dashboard can show approve/skip UI."""
+        expires = datetime.now(timezone.utc).timestamp() + APPROVAL_TIMEOUT_SEC
+        data = {
+            "status":       "pending",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at":   datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
+            "expires_ts":   expires,
+            "signal": {
+                "bias":            signal.bias,
+                "strategy":        signal.strategy,
+                "signal_quality":  signal.signal_quality,
+                "signal_score":    signal.signal_score,
+                "entry_price":     signal.entry_price,
+                "stop_loss":       signal.stop_loss,
+                "take_profit_1":   signal.take_profit_1,
+                "take_profit_2":   signal.take_profit_2,
+                "risk_reward_t1":  signal.risk_reward_t1,
+                "entry_trigger":   signal.entry_trigger,
+                "invalidation":    signal.invalidation,
+                "session":         signal.session,
+                "vwap_distance":   signal.vwap_distance,
+                "max_hold_time":   signal.max_hold_time,
+                "stop_rationale":  signal.stop_rationale,
+            },
+            "position_size": pos_size,
+            "notional":      round(pos_size * signal.entry_price, 2),
+        }
+        PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PENDING_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    def _wait_for_approval(self) -> bool:
+        """Poll pending_signal.json until approved/skipped or timeout. Returns True if approved."""
+        deadline = time.time() + APPROVAL_TIMEOUT_SEC
+        while time.time() < deadline:
+            try:
+                data = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+                status = data.get("status", "pending")
+                if status == "approved":
+                    return True
+                if status == "skipped":
+                    return False
+            except Exception:
+                pass
+            time.sleep(3)
+        return False  # timeout
+
+    def _clear_pending_signal(self) -> None:
+        try:
+            if PENDING_FILE.exists():
+                PENDING_FILE.unlink()
+        except Exception:
+            pass
 
     # ── State writer (for dashboard) ──────────────────────────────────────────
 

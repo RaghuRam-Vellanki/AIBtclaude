@@ -39,8 +39,14 @@ SESSION_OPENS_IST = {
 ATR_REDUCE_25_THRESHOLD  = 2000   # daily ATR > $2 000 → 25 % size reduction
 ATR_REDUCE_50_THRESHOLD  = 3500   # daily ATR > $3 500 → 50 % size reduction
 
+# ── Trade approval ───────────────────────────────────────────────────────────
+REQUIRE_APPROVAL     = True    # If True, bot waits for dashboard approval before executing
+APPROVAL_TIMEOUT_SEC = 300     # Auto-skip if no approval within 5 minutes
+
 # ── Skill file ───────────────────────────────────────────────────────────────
 import pathlib
-BASE_DIR   = pathlib.Path(__file__).parent
-SKILL_FILE = BASE_DIR / "BTC_INSTITUTIONAL_SKILL.md"
-LOG_FILE   = BASE_DIR / "logs" / "trades_log.json"
+BASE_DIR        = pathlib.Path(__file__).parent
+SKILL_FILE      = BASE_DIR / "BTC_INSTITUTIONAL_SKILL.md"
+LOG_FILE        = BASE_DIR / "logs" / "trades_log.json"
+PENDING_FILE    = BASE_DIR / "logs" / "pending_signal.json"
+BOT_PID_FILE    = BASE_DIR / "logs" / "bot_pid.txt"
