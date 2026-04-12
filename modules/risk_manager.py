@@ -56,6 +56,10 @@ class RiskManager:
         if signal.bias not in ("BULLISH", "BEARISH"):
             return False, f"Bias is {signal.bias} — only BULLISH or BEARISH allowed"
 
+        # Alpaca paper crypto does not support short selling — long only
+        if signal.bias == "BEARISH":
+            return False, "BEARISH signals skipped — Alpaca paper crypto is long-only (no shorting)"
+
         if signal.signal_quality == "B" and demo_trades_count < 50:
             return False, f"B-grade signals require 50+ demo trades (have {demo_trades_count})"
 

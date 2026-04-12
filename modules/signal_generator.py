@@ -76,13 +76,13 @@ class SignalGenerator:
         return path.read_text(encoding="utf-8")
 
     # Compact system prompt — keeps token count low for Groq free tier
-    _SYSTEM_PROMPT = """You are an institutional BTC/USD trading agent.
+    _SYSTEM_PROMPT = """You are an institutional BTC/USD trading agent. Long-only (no shorting).
 Analyze the market snapshot and output ONE structured trade signal.
 Rules: No RSI/MACD. Use liquidity, VWAP, structure only.
-Stop loss: 5% from entry (BULLISH: entry * 0.95, BEARISH: entry * 1.05).
+BIAS must be BULLISH only. We cannot short — if bearish, set SIGNAL_QUALITY: NO_TRADE.
+Stop loss: 5% below entry (entry * 0.95).
 Risk per trade: 0.5-1%.
 Only trade A/A+ quality (5-6/6 signals aligned).
-BIAS must be BULLISH or BEARISH only. If no clear directional edge, set SIGNAL_QUALITY: NO_TRADE.
 Always end with the exact === BTC BOT SIGNAL === block."""
 
     def generate(self, market_snapshot: Dict[str, Any]) -> TradeSignal:

@@ -99,7 +99,13 @@ class BTCTradingAgent:
                 existing["qty"], existing["avg_entry"], existing["unrealized_pl"],
             )
             self._order_manager.close_position()
-            logger.info("Leftover position closed.")
+            logger.info("Leftover position closed. Waiting 8s for Alpaca to settle funds...")
+            time.sleep(8)
+            # Re-fetch account value after settlement
+            refreshed = self._order_manager.get_account_value()
+            if refreshed > 0:
+                self._risk_manager.account_value = refreshed
+                logger.info("Account balance after settlement: $%.2f", refreshed)
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
