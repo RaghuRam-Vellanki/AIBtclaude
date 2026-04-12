@@ -15,12 +15,14 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal as os_signal
 import sys
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from config import ANALYSIS_INTERVAL_SECONDS, PAPER_MODE, SYMBOL
@@ -85,6 +87,7 @@ class BTCTradingAgent:
         self._active_order_id:    Optional[str] = None
         self._active_signal:      Optional[TradeSignal] = None
         self._running             = True
+        self._state_file          = Path("logs/state.json")
 
         logger.info("Account value: $%.2f", account_value)
 
@@ -163,6 +166,7 @@ class BTCTradingAgent:
                 # Mark first success once we have price data
                 if self._data_feed.latest_price > 0:
                     first_success = True
+            self._write_state()
             time.sleep(30)
 
     def _run_analysis(self, trigger: str = "manual") -> None:
@@ -257,6 +261,7 @@ class BTCTradingAgent:
         self._active_signal   = signal
 
         logger.info("Trade opened: %s | Order: %s", trade_id, order_id)
+        self._write_state()
 
     # ── Position monitoring ───────────────────────────────────────────────────
 
@@ -322,6 +327,7 @@ class BTCTradingAgent:
         self._active_trade_id = None
         self._active_order_id = None
         self._active_signal   = None
+        self._write_state()
 
     # ── Snapshot builder ──────────────────────────────────────────────────────
 
@@ -396,6 +402,89 @@ class BTCTradingAgent:
             "last_trade_result":    self._trade_logger.last_trade_result(),
             "account_value":        round(self._risk_manager.account_value, 2),
         }
+
+    # ── State writer (for dashboard) ──────────────────────────────────────────
+
+    def _write_state(self, bot_status: str = "running") -> None:
+        """Write current agent state to logs/state.json for the dashboard."""
+        try:
+            sig   = self._active_signal
+            trade = None
+            if sig and self._active_trade_id:
+                current_price = self._data_feed.latest_price
+                if sig.bias == "BULLISH":
+                    unreal_pl = (current_price - sig.entry_price) if current_price else 0
+                else:
+                    unreal_pl = (sig.entry_price - current_price) if current_price else 0
+
+                log_entries = [t for t in self._trade_logger._trades
+                               if t["trade_id"] == self._active_trade_id]
+                notional = (log_entries[0]["position_size"] * sig.entry_price) if log_entries else 0
+                unreal_pl_pct = (unreal_pl / sig.entry_price * 100) if sig.entry_price else 0
+
+                trade = {
+                    "trade_id":        self._active_trade_id,
+                    "bias":            sig.bias,
+                    "entry_price":     sig.entry_price,
+                    "stop_loss":       sig.stop_loss,
+                    "take_profit_1":   sig.take_profit_1,
+                    "take_profit_2":   sig.take_profit_2,
+                    "current_price":   current_price,
+                    "unrealized_pl":   round(unreal_pl * (notional / sig.entry_price if sig.entry_price else 0), 2),
+                    "unrealized_pl_pct": round(unreal_pl_pct, 3),
+                    "notional":        round(notional, 2),
+                    "open_time":       log_entries[0]["date_time_open"] if log_entries else None,
+                    "strategy":        sig.strategy,
+                }
+
+            last_signal = None
+            if sig:
+                last_signal = {
+                    "timestamp":      sig.timestamp,
+                    "bias":           sig.bias,
+                    "signal_quality": sig.signal_quality,
+                    "signal_score":   sig.signal_score,
+                    "strategy":       sig.strategy,
+                    "entry_price":    sig.entry_price,
+                    "stop_loss":      sig.stop_loss,
+                    "take_profit_1":  sig.take_profit_1,
+                    "take_profit_2":  sig.take_profit_2,
+                    "risk_reward_t1": sig.risk_reward_t1,
+                    "session":        sig.session,
+                    "vwap_distance":  sig.vwap_distance,
+                    "entry_trigger":  sig.entry_trigger,
+                    "invalidation":   sig.invalidation,
+                    "max_hold_time":  sig.max_hold_time,
+                }
+
+            stats_raw = self._trade_logger.get_session_stats()
+            state = {
+                "last_updated":  datetime.now(timezone.utc).isoformat(),
+                "bot_status":    bot_status,
+                "latest_price":  self._data_feed.latest_price,
+                "session":       self._session_manager.current_session(),
+                "account": {
+                    "balance": round(self._risk_manager.account_value, 2),
+                },
+                "daily_pnl_pct": round(self._risk_manager.daily_pnl_pct * 100, 3),
+                "current_trade": trade,
+                "last_signal":   last_signal,
+                "last_analysis_time": datetime.fromtimestamp(
+                    self._last_analysis_time, tz=timezone.utc
+                ).isoformat() if self._last_analysis_time else None,
+                "stats": {
+                    "total_trades": stats_raw.get("total", 0),
+                    "wins":         stats_raw.get("wins", 0),
+                    "losses":       stats_raw.get("losses", 0),
+                    "win_rate":     stats_raw.get("win_rate", 0),
+                    "total_pnl_pct": stats_raw.get("total_pnl_pct", 0),
+                },
+            }
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._state_file, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2, default=str)
+        except Exception as exc:
+            logger.debug("Failed to write state.json: %s", exc)
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
 
