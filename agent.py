@@ -92,8 +92,10 @@ class BTCTradingAgent:
         self._active_trade_id:    Optional[str] = None
         self._active_order_id:    Optional[str] = None
         self._active_signal:      Optional[TradeSignal] = None
+        self._last_signal:        Optional[TradeSignal] = None   # persists after skip/close
         self._running             = True
         self._state_file          = Path("logs/state.json")
+        self._analyze_trigger     = Path("logs/analyze_now.json")
 
         logger.info("Account value: $%.2f", account_value)
         self._write_state("starting")
@@ -174,11 +176,22 @@ class BTCTradingAgent:
             elapsed = now - self._last_analysis_time
             # Before first success: retry every 2 min; after: every hour
             interval = ANALYSIS_INTERVAL_SECONDS if first_success else 120
-            if elapsed >= interval:
-                self._run_analysis(trigger="hourly_poll" if first_success else "startup")
-                # Mark first success once we have price data
+            # Check for dashboard "Analyze Now" trigger
+            if self._analyze_trigger.exists():
+                try:
+                    self._analyze_trigger.unlink()
+                except Exception:
+                    pass
+                logger.info("Analyze Now triggered from dashboard")
+                self._run_analysis(trigger="dashboard_request")
                 if self._data_feed.latest_price > 0:
                     first_success = True
+
+            elif elapsed >= interval:
+                self._run_analysis(trigger="hourly_poll" if first_success else "startup")
+                if self._data_feed.latest_price > 0:
+                    first_success = True
+
             self._write_state()
             time.sleep(30)
 
@@ -208,6 +221,7 @@ class BTCTradingAgent:
 
         # Call AI for signal
         signal = self._signal_gen.generate(snapshot)
+        self._last_signal = signal   # persist for dashboard even if skipped
 
         # Override stop loss to exactly 5% from entry (regardless of model suggestion)
         if signal.entry_price > 0 and signal.bias in ("BULLISH", "BEARISH"):
@@ -521,24 +535,26 @@ class BTCTradingAgent:
                     "strategy":        sig.strategy,
                 }
 
+            # Use last_signal (persists after skip) for display; active_signal for trade
+            display_sig = self._last_signal
             last_signal = None
-            if sig:
+            if display_sig:
                 last_signal = {
-                    "timestamp":      sig.timestamp,
-                    "bias":           sig.bias,
-                    "signal_quality": sig.signal_quality,
-                    "signal_score":   sig.signal_score,
-                    "strategy":       sig.strategy,
-                    "entry_price":    sig.entry_price,
-                    "stop_loss":      sig.stop_loss,
-                    "take_profit_1":  sig.take_profit_1,
-                    "take_profit_2":  sig.take_profit_2,
-                    "risk_reward_t1": sig.risk_reward_t1,
-                    "session":        sig.session,
-                    "vwap_distance":  sig.vwap_distance,
-                    "entry_trigger":  sig.entry_trigger,
-                    "invalidation":   sig.invalidation,
-                    "max_hold_time":  sig.max_hold_time,
+                    "timestamp":      display_sig.timestamp,
+                    "bias":           display_sig.bias,
+                    "signal_quality": display_sig.signal_quality,
+                    "signal_score":   display_sig.signal_score,
+                    "strategy":       display_sig.strategy,
+                    "entry_price":    display_sig.entry_price,
+                    "stop_loss":      display_sig.stop_loss,
+                    "take_profit_1":  display_sig.take_profit_1,
+                    "take_profit_2":  display_sig.take_profit_2,
+                    "risk_reward_t1": display_sig.risk_reward_t1,
+                    "session":        display_sig.session,
+                    "vwap_distance":  display_sig.vwap_distance,
+                    "entry_trigger":  display_sig.entry_trigger,
+                    "invalidation":   display_sig.invalidation,
+                    "max_hold_time":  display_sig.max_hold_time,
                 }
 
             stats_raw = self._trade_logger.get_session_stats()
@@ -550,7 +566,7 @@ class BTCTradingAgent:
                 "account": {
                     "balance": round(self._risk_manager.account_value, 2),
                 },
-                "daily_pnl_pct": round(self._risk_manager.daily_pnl_pct * 100, 3),
+                "daily_pnl_pct": round(min(max(self._risk_manager.daily_pnl_pct * 100, -100), 100), 3),
                 "current_trade": trade,
                 "last_signal":   last_signal,
                 "last_analysis_time": datetime.fromtimestamp(

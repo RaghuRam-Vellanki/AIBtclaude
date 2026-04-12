@@ -97,6 +97,15 @@ def skip():
     return JSONResponse({"status": "skipped"})
 
 
+@app.post("/api/bot/analyze")
+def bot_analyze():
+    """Trigger immediate re-analysis without waiting for hourly interval."""
+    trigger = LOGS_DIR / "analyze_now.json"
+    trigger.parent.mkdir(parents=True, exist_ok=True)
+    trigger.write_text('{"trigger": true}', encoding="utf-8")
+    return JSONResponse({"status": "triggered"})
+
+
 @app.get("/api/pending")
 def get_pending():
     if not PENDING_F.exists():
@@ -260,6 +269,7 @@ header{display:flex;align-items:center;gap:16px;padding:7px 14px;
   <div class="hs"><span class="l">Bot Status</span><span class="v" id="h-status"><span class="dot dy"></span>connecting...</span></div>
   <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
     <span style="font-size:10px;color:var(--sub)" id="h-ts"></span>
+    <button class="btn" id="analyze-btn" onclick="analyzeNow()" style="background:rgba(33,150,243,.2);color:#64b5f6;border:1px solid #2196f3">Analyze Now</button>
     <button class="btn btn-start" id="bot-btn" onclick="toggleBot()">Start Bot</button>
   </div>
 </header>
@@ -335,6 +345,18 @@ function el(id){ return document.getElementById(id); }
 function post(url){ return fetch(url,{method:'POST'}); }
 
 var botRunning = false;
+
+// ── Analyze now ──
+function analyzeNow(){
+  var btn = el('analyze-btn');
+  btn.textContent = 'Requesting...';
+  btn.disabled = true;
+  post('/api/bot/analyze').then(function(r){ return r.json(); }).then(function(d){
+    btn.textContent = 'Sent!';
+    setTimeout(function(){ btn.textContent='Analyze Now'; btn.disabled=false; }, 3000);
+    poll();
+  }).catch(function(){ btn.textContent='Error'; btn.disabled=false; });
+}
 
 // ── Bot start/stop ──
 function toggleBot(){
