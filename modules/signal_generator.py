@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 from groq import Groq
 
-from config import GROQ_API_KEY, GROQ_MODEL, SKILL_FILE
+from config import DEMO_MODE, GROQ_API_KEY, GROQ_MODEL, SKILL_FILE, STOP_LOSS_PCT
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class SignalGenerator:
     """Wraps Groq API call and signal parsing."""
 
     def __init__(self):
-        self._client = Groq(api_key=GROQ_API_KEY)
+        self._client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY and not DEMO_MODE else None
         self._skill_content = self._load_skill()
 
     def _load_skill(self) -> str:
@@ -87,6 +87,9 @@ Always end with the exact === BTC BOT SIGNAL === block."""
 
     def generate(self, market_snapshot: Dict[str, Any]) -> TradeSignal:
         """Send market snapshot to Groq and return a parsed TradeSignal."""
+        if self._client is None:
+            return self._generate_demo_signal(market_snapshot)
+
         user_message = self._build_user_message(market_snapshot)
         logger.info("Calling Groq API (%s) for signal generation...", GROQ_MODEL)
 
@@ -108,7 +111,167 @@ Always end with the exact === BTC BOT SIGNAL === block."""
 
         except Exception as exc:
             logger.error("Groq API error: %s", exc)
-            return TradeSignal(signal_quality="NO_TRADE", raw_response=str(exc))
+            return self._generate_demo_signal(market_snapshot, fallback_reason=str(exc))
+
+    def _generate_demo_signal(
+        self,
+        snap: Dict[str, Any],
+        fallback_reason: str = "",
+    ) -> TradeSignal:
+        current_price = float(snap.get("current_price", 0) or 0)
+        if current_price <= 0:
+            return TradeSignal(
+                signal_quality="NO_TRADE",
+                raw_response="No public market price available yet.",
+            )
+
+        daily_structure = snap.get("daily_structure", "ranging")
+        h1_structure = snap.get("h1_structure", "ranging")
+        session_vwap = float(snap.get("session_vwap", 0) or 0)
+        vwap_distance = float(snap.get("vwap_distance", 0) or 0)
+        zscore = float(snap.get("zscore", 0) or 0)
+        daily_atr = float(snap.get("daily_atr", 0) or 0)
+        pdh = float(snap.get("pdh", 0) or 0)
+        pdl = float(snap.get("pdl", 0) or 0)
+        equal_highs = snap.get("equal_highs", []) or []
+        equal_lows = snap.get("equal_lows", []) or []
+        fvgs = snap.get("active_fvgs", []) or []
+
+        bullish_points = 0
+        bearish_points = 0
+        reasons: list[str] = []
+
+        if daily_structure == "uptrend":
+            bullish_points += 2
+            reasons.append("Daily structure is uptrend")
+        elif daily_structure == "downtrend":
+            bearish_points += 2
+            reasons.append("Daily structure is downtrend")
+
+        if h1_structure == "uptrend":
+            bullish_points += 2
+            reasons.append("1H structure is uptrend")
+        elif h1_structure == "downtrend":
+            bearish_points += 2
+            reasons.append("1H structure is downtrend")
+
+        if session_vwap:
+            if current_price >= session_vwap:
+                bullish_points += 1
+                reasons.append("Price is above session VWAP")
+            else:
+                bearish_points += 1
+                reasons.append("Price is below session VWAP")
+
+        if zscore <= -0.75:
+            bullish_points += 1
+            reasons.append("Price is below its 20-period mean and may revert upward")
+        elif zscore >= 0.75:
+            bearish_points += 1
+            reasons.append("Price is above its 20-period mean and may revert lower")
+
+        bullish_fvgs = [f for f in fvgs if f.get("direction") == "bullish"]
+        bearish_fvgs = [f for f in fvgs if f.get("direction") == "bearish"]
+        if bullish_fvgs:
+            bullish_points += 1
+            reasons.append("Unfilled bullish fair value gap is nearby")
+        if bearish_fvgs:
+            bearish_points += 1
+            reasons.append("Unfilled bearish fair value gap is nearby")
+
+        if equal_lows:
+            bullish_points += 1
+            reasons.append("Sell-side liquidity pool exists below price")
+        if equal_highs:
+            bearish_points += 1
+            reasons.append("Buy-side liquidity pool exists above price")
+
+        if pdh and current_price > pdh:
+            bullish_points += 1
+            reasons.append("Price is trading above previous day high")
+        elif pdl and current_price < pdl:
+            bearish_points += 1
+            reasons.append("Price is trading below previous day low")
+
+        bias = "NEUTRAL"
+        strategy = "Wait for clearer alignment"
+        score = max(bullish_points, bearish_points)
+        if bullish_points >= bearish_points + 2 and bullish_points >= 4:
+            bias = "BULLISH"
+            strategy = "Trend continuation with VWAP support"
+        elif bearish_points >= bullish_points + 2 and bearish_points >= 4:
+            bias = "BEARISH"
+            strategy = "Mean-reversion short from overhead liquidity"
+        elif bullish_points > bearish_points and bullish_points >= 3:
+            bias = "BULLISH"
+            strategy = "Early bullish continuation setup"
+        elif bearish_points > bullish_points and bearish_points >= 3:
+            bias = "BEARISH"
+            strategy = "Early bearish continuation setup"
+        elif score >= 3 and session_vwap:
+            bias = "BULLISH" if current_price >= session_vwap else "BEARISH"
+            strategy = "VWAP-led directional demo setup"
+
+        quality_map = {
+            6: "A+",
+            5: "A",
+            4: "B",
+        }
+        signal_quality = quality_map.get(score, "NO_TRADE")
+        if bias == "NEUTRAL":
+            signal_quality = "NO_TRADE"
+
+        if bias == "BULLISH":
+            stop_loss = round(current_price * (1 - STOP_LOSS_PCT), 2)
+            risk = current_price - stop_loss
+            take_profit_1 = round(current_price + (risk * 1.5), 2)
+            take_profit_2 = round(current_price + (risk * 2.5), 2)
+            take_profit_3 = round(current_price + (risk * 3.5), 2)
+            invalidation = "Lose session VWAP and close below the current 1H structure low"
+            funding = "Public demo mode | PASS"
+        elif bias == "BEARISH":
+            stop_loss = round(current_price * (1 + STOP_LOSS_PCT), 2)
+            risk = stop_loss - current_price
+            take_profit_1 = round(current_price - (risk * 1.5), 2)
+            take_profit_2 = round(current_price - (risk * 2.5), 2)
+            take_profit_3 = round(current_price - (risk * 3.5), 2)
+            invalidation = "Reclaim session VWAP and close above the current 1H structure high"
+            funding = "Public demo mode | PASS"
+        else:
+            stop_loss = take_profit_1 = take_profit_2 = take_profit_3 = 0.0
+            invalidation = "No edge: structure and VWAP are not aligned"
+            funding = "Public demo mode | PASS"
+
+        raw_reason = "\n".join(f"- {reason}" for reason in reasons[:6]) or "- No clear institutional edge"
+        if fallback_reason:
+            raw_reason += f"\n- LLM fallback reason: {fallback_reason}"
+
+        return TradeSignal(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            bias=bias,
+            strategy=strategy,
+            signal_quality=signal_quality,
+            signal_score=f"{score}/6",
+            entry_trigger="Enter near current market price after the next 1m candle confirms the direction",
+            entry_type="MARKET",
+            entry_price=round(current_price, 2) if bias != "NEUTRAL" else 0.0,
+            stop_loss=stop_loss,
+            stop_rationale=f"Fixed {int(STOP_LOSS_PCT * 100)}% demo stop from entry",
+            take_profit_1=take_profit_1,
+            take_profit_2=take_profit_2,
+            take_profit_3=take_profit_3,
+            risk_reward_t1="1.5:1" if bias != "NEUTRAL" else "",
+            risk_reward_t2="2.5:1" if bias != "NEUTRAL" else "",
+            risk_pct=0.5 if signal_quality == "B" else 0.75 if signal_quality == "A" else 1.0,
+            best_timeframe="1H",
+            max_hold_time="8 hours",
+            invalidation=invalidation,
+            funding_check=funding,
+            etf_flow_check="Public demo mode | Neutral",
+            session=snap.get("current_session", ""),
+            vwap_distance=f"${abs(vwap_distance):,.0f} {'above' if vwap_distance >= 0 else 'below'} session VWAP",
+            raw_response=raw_reason,
+        )
 
     # ── User message builder ──────────────────────────────────────────────────
 

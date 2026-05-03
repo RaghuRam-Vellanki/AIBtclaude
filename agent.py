@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import (
-    ANALYSIS_INTERVAL_SECONDS, PAPER_MODE, SYMBOL,
+    ANALYSIS_INTERVAL_SECONDS, DEMO_MODE, PAPER_MODE, SYMBOL,
     REQUIRE_APPROVAL, APPROVAL_TIMEOUT_SEC, PENDING_FILE, BOT_PID_FILE,
 )
 from modules.data_feed import DataFeed
@@ -68,6 +68,8 @@ class BTCTradingAgent:
         logger.info("=" * 60)
         logger.info("BTC/USD Institutional Trading Agent")
         logger.info("Mode: %s", "PAPER" if PAPER_MODE else "LIVE")
+        if DEMO_MODE:
+            logger.info("Demo mode: ON (public market data, signal-only, no broker execution)")
         logger.info("=" * 60)
         # Write PID so dashboard can stop/manage this process
         import os as _os
@@ -77,11 +79,11 @@ class BTCTradingAgent:
         self._data_feed       = DataFeed(on_bar_callback=self._on_bar)
         self._session_manager = SessionManager(on_session_open=self._on_session_open)
         self._signal_gen      = SignalGenerator()
-        self._order_manager   = OrderManager()
+        self._order_manager   = None if DEMO_MODE else OrderManager()
         self._trade_logger    = TradeLogger()
 
         # Get starting account value
-        account_value = self._order_manager.get_account_value()
+        account_value = 100_000.0 if DEMO_MODE else self._order_manager.get_account_value()
         if account_value == 0.0:
             logger.warning("Could not fetch account value — using $100,000 default")
             account_value = 100_000.0
@@ -101,7 +103,7 @@ class BTCTradingAgent:
         self._write_state("starting")
 
         # Close any leftover open BTC position from a previous run
-        existing = self._order_manager.get_open_position()
+        existing = None if DEMO_MODE else self._order_manager.get_open_position()
         if existing:
             logger.warning(
                 "Leftover position detected: %.6f BTC (entry $%.2f, P&L $%.4f) — closing before fresh start",
@@ -152,13 +154,16 @@ class BTCTradingAgent:
         # Update account value from risk manager every 100 bars
         # (avoid hammering Alpaca REST)
         if int(time.time()) % 600 < 2:  # roughly every 10 minutes
-            av = self._order_manager.get_account_value()
+            av = self._risk_manager.account_value if DEMO_MODE else self._order_manager.get_account_value()
             if av > 0:
                 self._risk_manager.account_value = av
 
         # Monitor open position for SL/TP breach (belt-and-suspenders)
         if self._active_trade_id and current_price > 0:
             self._monitor_position(current_price)
+
+        # Keep the dashboard price/state fresh between full analyses.
+        self._write_state()
 
     def _on_session_open(self, session: str) -> None:
         """Fires when a major session opens (Asia / London / NY)."""
@@ -211,7 +216,8 @@ class BTCTradingAgent:
             return
 
         # Cancel stale unfilled orders
-        self._order_manager.cancel_stale_orders(max_age_hours=4.0)
+        if not DEMO_MODE:
+            self._order_manager.cancel_stale_orders(max_age_hours=4.0)
 
         # Build snapshot
         snapshot = self._build_snapshot()
@@ -251,7 +257,7 @@ class BTCTradingAgent:
         # Calculate position size (pass live buying power for small-account cap)
         daily_atr    = snapshot.get("daily_atr", 0.0)
         vix          = snapshot.get("vix", 0.0)
-        buying_power = self._order_manager.get_account_value()
+        buying_power = self._risk_manager.account_value if DEMO_MODE else self._order_manager.get_account_value()
         pos_size     = self._risk_manager.calculate_position_size(
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
@@ -263,6 +269,19 @@ class BTCTradingAgent:
 
         if pos_size <= 0:
             logger.error("Position size calculation returned 0 — aborting")
+            return
+
+        if DEMO_MODE:
+            logger.info(
+                "Demo signal: %s | Quality: %s | Entry $%.2f | SL $%.2f | TP1 $%.2f | Strategy: %s",
+                signal.bias,
+                signal.signal_quality,
+                signal.entry_price,
+                signal.stop_loss,
+                signal.take_profit_1,
+                signal.strategy,
+            )
+            self._write_state("running")
             return
 
         logger.info(

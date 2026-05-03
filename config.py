@@ -3,6 +3,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
 # ── Alpaca ──────────────────────────────────────────────────────────────────
 ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
@@ -16,6 +23,12 @@ OPENAI_MODEL      = "gpt-4o-mini"
 # ── Groq (free tier) ──────────────────────────────────────────────────────────
 GROQ_API_KEY      = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL        = "llama-3.3-70b-versatile"   # free, better instruction following
+
+# Demo mode: use public market data + local strategy calls, no broker required.
+HAS_ALPACA_CREDS      = bool(ALPACA_API_KEY and ALPACA_SECRET_KEY)
+HAS_GROQ_KEY          = bool(GROQ_API_KEY)
+DEMO_MODE             = _env_flag("DEMO_MODE", default=not HAS_ALPACA_CREDS)
+ALLOW_BEARISH_SIGNALS = DEMO_MODE
 
 # ── Trading ───────────────────────────────────────────────────────────────────
 SYMBOL                    = "BTC/USD"

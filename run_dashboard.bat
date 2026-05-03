@@ -1,6 +1,7 @@
 @echo off
-cd /d C:\Users\pc\xauusdagent
-call venv\Scripts\activate
+setlocal
+cd /d C:\Users\pc\Desktop\AIBtclaude
+if not exist logs mkdir logs
 echo.
 echo  BTC Trading Dashboard
 echo  Open: http://localhost:8080

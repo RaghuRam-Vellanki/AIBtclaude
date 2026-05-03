@@ -9,6 +9,7 @@ import logging
 from typing import List, Optional
 
 from config import (
+    ALLOW_BEARISH_SIGNALS,
     ATR_REDUCE_25_THRESHOLD,
     ATR_REDUCE_50_THRESHOLD,
     DAILY_MAX_LOSS_PCT,
@@ -56,8 +57,8 @@ class RiskManager:
         if signal.bias not in ("BULLISH", "BEARISH"):
             return False, f"Bias is {signal.bias} — only BULLISH or BEARISH allowed"
 
-        # Alpaca paper crypto does not support short selling — long only
-        if signal.bias == "BEARISH":
+        # Live Alpaca crypto is long-only in this app; demo mode allows both directions.
+        if signal.bias == "BEARISH" and not ALLOW_BEARISH_SIGNALS:
             return False, "BEARISH signals skipped — Alpaca paper crypto is long-only (no shorting)"
 
         if signal.signal_quality == "B" and demo_trades_count < 50:

@@ -22,6 +22,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, DEMO_MODE, GROQ_API_KEY
+
 load_dotenv()
 
 app = FastAPI(title="BTC Trading Dashboard")
@@ -35,17 +37,65 @@ PENDING_F = LOGS_DIR / "pending_signal.json"
 PID_F     = LOGS_DIR / "bot_pid.txt"
 
 
+def _missing_bot_credentials() -> list[str]:
+    if DEMO_MODE:
+        return []
+    missing: list[str] = []
+    if not ALPACA_API_KEY:
+        missing.append("ALPACA_API_KEY")
+    if not ALPACA_SECRET_KEY:
+        missing.append("ALPACA_SECRET_KEY")
+    if not GROQ_API_KEY:
+        missing.append("GROQ_API_KEY")
+    return missing
+
+
+def _read_bot_pid() -> int | None:
+    if not PID_F.exists():
+        return None
+    try:
+        return int(PID_F.read_text().strip())
+    except Exception:
+        PID_F.unlink(missing_ok=True)
+        return None
+
+
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _live_bot_pid() -> int | None:
+    pid = _read_bot_pid()
+    if pid is None:
+        return None
+    if _is_pid_alive(pid):
+        return pid
+    PID_F.unlink(missing_ok=True)
+    return None
+
+
 # ── Bot process control ───────────────────────────────────────────────────────
 
 @app.post("/api/bot/start")
 def bot_start():
-    if PID_F.exists():
-        pid = int(PID_F.read_text().strip())
-        try:
-            os.kill(pid, 0)   # check if alive
-            return JSONResponse({"status": "already_running", "pid": pid})
-        except OSError:
-            PID_F.unlink(missing_ok=True)
+    missing = _missing_bot_credentials()
+    if missing:
+        return JSONResponse(
+            {
+                "status": "config_error",
+                "detail": "Missing required environment variables",
+                "missing": missing,
+            },
+            status_code=400,
+        )
+
+    pid = _live_bot_pid()
+    if pid is not None:
+        return JSONResponse({"status": "already_running", "pid": pid})
 
     log_handle = open(LOG_F, "a", encoding="utf-8")
     proc = subprocess.Popen(
@@ -60,9 +110,9 @@ def bot_start():
 
 @app.post("/api/bot/stop")
 def bot_stop():
-    if not PID_F.exists():
+    pid = _live_bot_pid()
+    if pid is None:
         return JSONResponse({"status": "not_running"})
-    pid = int(PID_F.read_text().strip())
     try:
         if sys.platform == "win32":
             subprocess.call(["taskkill", "/F", "/PID", str(pid)],
@@ -100,10 +150,13 @@ def skip():
 @app.post("/api/bot/analyze")
 def bot_analyze():
     """Trigger immediate re-analysis without waiting for hourly interval."""
+    pid = _live_bot_pid()
+    if pid is None:
+        return JSONResponse({"status": "not_running"}, status_code=409)
     trigger = LOGS_DIR / "analyze_now.json"
     trigger.parent.mkdir(parents=True, exist_ok=True)
     trigger.write_text('{"trigger": true}', encoding="utf-8")
-    return JSONResponse({"status": "triggered"})
+    return JSONResponse({"status": "triggered", "pid": pid})
 
 
 @app.get("/api/pending")
@@ -127,7 +180,10 @@ def index():
 def get_state():
     if STATE_F.exists():
         try:
-            return JSONResponse(json.loads(STATE_F.read_text(encoding="utf-8")))
+            state = json.loads(STATE_F.read_text(encoding="utf-8"))
+            if _live_bot_pid() is None:
+                state["bot_status"] = "offline"
+            return JSONResponse(state)
         except Exception:
             pass
     return JSONResponse({"bot_status": "offline", "latest_price": 0, "session": ""})
@@ -342,7 +398,14 @@ function bdg(b){ if(b==='BULLISH')return'<span class="badge bg">LONG</span>'; if
 function ago(iso){ if(!iso)return'—'; var s=Math.floor((Date.now()-new Date(iso))/1000); if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; }
 function qc(q){ return q==='A+'?'#26a69a':q==='A'?'#2196f3':q==='B'?'#f9a825':'#787b86'; }
 function el(id){ return document.getElementById(id); }
-function post(url){ return fetch(url,{method:'POST'}); }
+function post(url){
+  return fetch(url,{method:'POST'}).then(function(r){
+    return r.json().then(function(data){
+      if(!r.ok){ throw data; }
+      return data;
+    });
+  });
+}
 
 var botRunning = false;
 
@@ -351,36 +414,44 @@ function analyzeNow(){
   var btn = el('analyze-btn');
   btn.textContent = 'Requesting...';
   btn.disabled = true;
-  post('/api/bot/analyze').then(function(r){ return r.json(); }).then(function(d){
+  post('/api/bot/analyze').then(function(d){
     btn.textContent = 'Sent!';
     setTimeout(function(){ btn.textContent='Analyze Now'; btn.disabled=false; }, 3000);
     poll();
-  }).catch(function(){ btn.textContent='Error'; btn.disabled=false; });
+  }).catch(function(err){
+    btn.textContent = (err && err.status==='not_running') ? 'Bot Offline' : 'Error';
+    setTimeout(function(){ btn.textContent='Analyze Now'; btn.disabled=false; }, 3000);
+    poll();
+  });
 }
 
 // ── Bot start/stop ──
 function toggleBot(){
   if(botRunning){
-    post('/api/bot/stop').then(function(r){return r.json();}).then(function(d){
+    post('/api/bot/stop').then(function(d){
       console.log('stop:',d); poll();
+    }).catch(function(d){
+      console.log('stop error:',d); poll();
     });
   } else {
-    post('/api/bot/start').then(function(r){return r.json();}).then(function(d){
+    post('/api/bot/start').then(function(d){
       console.log('start:',d); poll();
+    }).catch(function(d){
+      console.log('start error:',d); poll();
     });
   }
 }
 
 // ── Approval ──
 function approveSignal(){
-  post('/api/signal/approve').then(function(r){return r.json();}).then(function(d){
+  post('/api/signal/approve').then(function(d){
     console.log('approved',d);
     el('approval-card').style.display='none';
     poll();
   });
 }
 function skipSignal(){
-  post('/api/signal/skip').then(function(r){return r.json();}).then(function(d){
+  post('/api/signal/skip').then(function(d){
     console.log('skipped',d);
     el('approval-card').style.display='none';
     poll();
