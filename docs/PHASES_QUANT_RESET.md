@@ -308,9 +308,11 @@ clusters / 80% of NIFTY's 5. No more "3-of-11 false-quorum" issue.
 
 ---
 
-## Phase 4 — Validation (in progress)
+## Phase 4 — Validation (deferred)
 
-No code change unless something regresses. Three checks:
+Skipped per user request — Phase 1+2+3 ship without the 1y backtest replay.
+Re-run when ready by following the steps below. No code change unless
+something regresses. Three checks:
 
 ### 4.1 Walk-forward backtest
 
