@@ -1,0 +1,19 @@
+{
+  "_comment": "High-impact macro events. Block trading window (window_min) BEFORE and AFTER each event timestamp (UTC). block_assets controls which bots blackout. Edit by hand weekly. Generators import via modules/event_calendar.is_blackout(asset, now_utc).",
+  "_format": "ts: ISO-8601 UTC. window_min: minutes on EACH side of ts. block_assets: subset of [xau, btc, nifty].",
+  "events": [
+    {"ts": "2026-05-13T12:30:00Z", "name": "US CPI",            "block_assets": ["xau", "btc"],          "window_min": 30, "impact": "high"},
+    {"ts": "2026-05-15T12:30:00Z", "name": "US Retail Sales",   "block_assets": ["xau"],                  "window_min": 15, "impact": "med"},
+    {"ts": "2026-05-22T12:30:00Z", "name": "US Initial Claims", "block_assets": ["xau"],                  "window_min": 10, "impact": "med"},
+    {"ts": "2026-05-30T12:30:00Z", "name": "US PCE Core",       "block_assets": ["xau", "btc"],          "window_min": 30, "impact": "high"},
+    {"ts": "2026-06-06T05:00:00Z", "name": "RBI MPC",           "block_assets": ["nifty"],                "window_min": 60, "impact": "high"},
+    {"ts": "2026-06-06T12:30:00Z", "name": "US NFP",            "block_assets": ["xau", "btc"],          "window_min": 30, "impact": "high"},
+    {"ts": "2026-06-11T12:30:00Z", "name": "US CPI",            "block_assets": ["xau", "btc"],          "window_min": 30, "impact": "high"},
+    {"ts": "2026-06-12T05:30:00Z", "name": "India CPI",         "block_assets": ["nifty"],                "window_min": 30, "impact": "high"},
+    {"ts": "2026-06-18T18:00:00Z", "name": "FOMC Decision",     "block_assets": ["xau", "btc", "nifty"], "window_min": 60, "impact": "extreme"},
+    {"ts": "2026-06-18T18:30:00Z", "name": "FOMC Press Conf",   "block_assets": ["xau", "btc", "nifty"], "window_min": 30, "impact": "extreme"},
+    {"ts": "2026-06-26T12:30:00Z", "name": "US PCE Core",       "block_assets": ["xau", "btc"],          "window_min": 30, "impact": "high"},
+    {"ts": "2026-07-03T12:30:00Z", "name": "US NFP",            "block_assets": ["xau", "btc"],          "window_min": 30, "impact": "high"},
+    {"ts": "2026-07-09T12:30:00Z", "name": "US CPI",            "block_assets": ["xau", "btc"],          "window_min": 30, "impact": "high"}
+  ]
+}

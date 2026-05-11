@@ -1,0 +1,13 @@
+{
+  "_comment": "US CPI All-Items YoY % — update monthly from BLS (https://www.bls.gov/cpi/) or replace this synthetic fallback by setting FRED_API_KEY in .env",
+  "latest_yoy_pct": 2.6,
+  "as_of": "2026-04-01",
+  "history": {
+    "2026-03": 2.6,
+    "2026-02": 2.7,
+    "2026-01": 2.9,
+    "2025-12": 2.9,
+    "2025-11": 2.7,
+    "2025-10": 2.6
+  }
+}

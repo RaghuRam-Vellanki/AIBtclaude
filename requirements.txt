@@ -7,3 +7,13 @@ python-dotenv>=1.0.0
 pytz>=2024.1
 fastapi>=0.111.0
 uvicorn>=0.29.0
+
+# XAU/USD multi-strategy pod
+yfinance>=0.2.40
+hmmlearn>=0.3.2
+statsmodels>=0.14.0
+matplotlib>=3.8.0
+scipy>=1.11.0
+
+# NIFTY 50 (Indian market)
+tzdata>=2024.1            # Windows zoneinfo data for "Asia/Kolkata"

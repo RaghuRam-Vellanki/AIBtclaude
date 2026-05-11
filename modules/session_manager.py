@@ -58,12 +58,15 @@ class SessionManager:
     def tick(self, utc_now: Optional[datetime] = None) -> None:
         """
         Call this every minute. Fires on_session_open callback when session changes.
+        On first tick (last_session is None) we silently adopt the current session
+        so the agent's own startup analysis doesn't get duplicated.
         """
         session = self.current_session(utc_now)
         if session != self._last_session:
+            is_first_tick = self._last_session is None
             logger.info("Session changed: %s -> %s", self._last_session, session)
             self._last_session = session
-            if self._on_session_open and session in ANALYSIS_SESSIONS:
+            if self._on_session_open and session in ANALYSIS_SESSIONS and not is_first_tick:
                 self._on_session_open(session)
 
     def minutes_until_next_session_open(self, utc_now: Optional[datetime] = None) -> int:

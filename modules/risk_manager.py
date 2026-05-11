@@ -13,6 +13,7 @@ from config import (
     ATR_REDUCE_25_THRESHOLD,
     ATR_REDUCE_50_THRESHOLD,
     DAILY_MAX_LOSS_PCT,
+    DEMO_MODE,
     MAX_CONSECUTIVE_LOSSES,
     MIN_SIGNAL_QUALITY,
     MIN_STOP_DISTANCE_USD,
@@ -35,12 +36,13 @@ class RiskManager:
     Tracks daily P&L and consecutive losses for circuit breakers.
     """
 
-    def __init__(self, account_value: float):
+    def __init__(self, account_value: float, asset_label: str = "units"):
         self._account_value      = account_value
         self._start_of_day_value = account_value
         self._consecutive_losses = 0
         self._daily_trades       = 0
         self._session_halted     = False
+        self._asset_label        = asset_label
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -61,7 +63,9 @@ class RiskManager:
         if signal.bias == "BEARISH" and not ALLOW_BEARISH_SIGNALS:
             return False, "BEARISH signals skipped — Alpaca paper crypto is long-only (no shorting)"
 
-        if signal.signal_quality == "B" and demo_trades_count < 50:
+        # In DEMO_MODE we surface all B-grade signals so the user can see calls.
+        # In live/paper mode B-grade requires 50+ demo-track-record trades first.
+        if signal.signal_quality == "B" and demo_trades_count < 50 and not DEMO_MODE:
             return False, f"B-grade signals require 50+ demo trades (have {demo_trades_count})"
 
         if signal.signal_quality not in _QUALITY_RISK:
@@ -141,8 +145,8 @@ class RiskManager:
             max_affordable_btc = available * 0.95 / entry_price
             if position_btc > max_affordable_btc:
                 logger.info(
-                    "Position capped by buying power: %.6f -> %.6f BTC ($%.2f available)",
-                    position_btc, max_affordable_btc, available,
+                    "Position capped by buying power: %.6f -> %.6f %s ($%.2f available)",
+                    position_btc, max_affordable_btc, self._asset_label, available,
                 )
                 position_btc = max_affordable_btc
 
@@ -166,8 +170,8 @@ class RiskManager:
                     return 0.0
 
         logger.info(
-            "Position size: %.6f BTC ($%.2f notional) | Risk: $%.2f | Stop dist: $%.0f",
-            position_btc, position_btc * entry_price, risk_dollars, stop_distance,
+            "Position size: %.6f %s ($%.2f notional) | Risk: $%.2f | Stop dist: $%.0f",
+            position_btc, self._asset_label, position_btc * entry_price, risk_dollars, stop_distance,
         )
         return round(position_btc, 6)
 

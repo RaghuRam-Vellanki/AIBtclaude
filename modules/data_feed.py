@@ -12,10 +12,17 @@ import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Deque, Dict, List, Optional
+import ssl
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import pandas as pd
+
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except Exception:
+    _SSL_CTX = ssl.create_default_context()
 from alpaca.data.historical.crypto import CryptoHistoricalDataClient
 from alpaca.data.live.crypto import CryptoDataStream
 from alpaca.data.requests import CryptoBarsRequest
@@ -195,14 +202,27 @@ class DataFeed:
             self._latest_price = float(self._bars["1Min"][-1]["close"])
 
     def _run_demo_polling_loop(self) -> None:
+        """Polls Coinbase every POLL_SEC for fresh BTC ticker + 1m bars.
+        Higher TFs refresh every HIGHER_TF_EVERY iterations to limit API hits.
+        Also pulls a fresh /ticker on every iteration so latest_price reflects
+        the live last-trade price even when the 1m candle hasn't closed yet."""
+        POLL_SEC = 15            # was 60 — gives near-real-time feel on dashboard
+        HIGHER_TF_EVERY = 20     # 20 * 15s = 5min between higher-TF refreshes
         refresh_counter = 0
         while True:
             try:
+                # Live ticker (last trade price) — fresh every 15s
+                tick = self._fetch_ticker_price()
+                if tick is not None:
+                    self._latest_price = tick
+
                 latest = self._fetch_public_bars("1Min", WINDOW_SIZES["1Min"])
                 self._store_frame("1Min", latest)
                 if not latest.empty:
                     newest = latest.iloc[-1]
-                    self._latest_price = float(newest["close"])
+                    # Only override ticker if we couldn't fetch one
+                    if tick is None:
+                        self._latest_price = float(newest["close"])
                     if self._on_bar:
                         self._on_bar(pd.Series({
                             "timestamp": latest.index[-1],
@@ -213,7 +233,7 @@ class DataFeed:
                             "volume": float(newest["volume"]),
                         }))
 
-                if refresh_counter % 5 == 0:
+                if refresh_counter % HIGHER_TF_EVERY == 0:
                     for timeframe in ("5Min", "15Min", "1Hour", "1Day"):
                         frame = self._fetch_public_bars(timeframe, WINDOW_SIZES[timeframe])
                         self._store_frame(timeframe, frame)
@@ -226,54 +246,181 @@ class DataFeed:
                 logger.error("Demo market-data polling failed: %s", exc)
 
             refresh_counter += 1
-            time.sleep(60)
+            time.sleep(POLL_SEC)
+
+    # ── Funding + OI (perp futures positioning) ───────────────────────────────
+
+    def fetch_funding_rate(self) -> dict:
+        """Latest BTCUSDT funding rate from Binance fapi (no auth needed).
+        Returns {'lastFundingRate': float decimal/8h, 'markPrice': float, 'ts': int}.
+
+        Cached for 60s to avoid hammering the API.
+        """
+        cache = getattr(self, "_funding_cache", None)
+        now = time.time()
+        if cache and now - cache.get("ts_local", 0) < 60.0:
+            return cache
+        try:
+            url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
+            req = Request(url, headers={"Accept": "application/json", "User-Agent": "AIBtclaude/1.0"})
+            with urlopen(req, timeout=8, context=_SSL_CTX) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            out = {
+                "lastFundingRate": float(payload.get("lastFundingRate", 0) or 0),
+                "markPrice":       float(payload.get("markPrice", 0) or 0),
+                "indexPrice":      float(payload.get("indexPrice", 0) or 0),
+                "nextFundingTime": int(payload.get("nextFundingTime", 0) or 0),
+                "ts_local":        now,
+            }
+            self._funding_cache = out
+            return out
+        except Exception as exc:
+            logger.debug("Binance premiumIndex fetch failed: %s", exc)
+            # Return neutral on failure rather than raise — strategy code should
+            # gracefully treat 0 as "no signal".
+            return {"lastFundingRate": 0.0, "markPrice": 0.0, "indexPrice": 0.0,
+                    "nextFundingTime": 0, "ts_local": now}
+
+    def fetch_oi_change(self) -> dict:
+        """24h OI change for BTCUSDT perp from Binance futures-data.
+        Returns {'oi_24h_pct': float, 'oi_now': float, 'ts': int}.
+
+        Compares oldest vs latest of last 24 hourly OI snapshots.
+        Cached for 5min.
+        """
+        cache = getattr(self, "_oi_cache", None)
+        now = time.time()
+        if cache and now - cache.get("ts_local", 0) < 300.0:
+            return cache
+        try:
+            url = ("https://fapi.binance.com/futures/data/openInterestHist"
+                   "?symbol=BTCUSDT&period=1h&limit=24")
+            req = Request(url, headers={"Accept": "application/json", "User-Agent": "AIBtclaude/1.0"})
+            with urlopen(req, timeout=8, context=_SSL_CTX) as resp:
+                rows = json.loads(resp.read().decode("utf-8"))
+            if isinstance(rows, list) and len(rows) >= 2:
+                oi_first = float(rows[0].get("sumOpenInterest", 0) or 0)
+                oi_last  = float(rows[-1].get("sumOpenInterest", 0) or 0)
+                pct = (oi_last - oi_first) / oi_first if oi_first > 0 else 0.0
+                out = {"oi_24h_pct": float(pct), "oi_now": oi_last, "ts_local": now}
+            else:
+                out = {"oi_24h_pct": 0.0, "oi_now": 0.0, "ts_local": now}
+            self._oi_cache = out
+            return out
+        except Exception as exc:
+            logger.debug("Binance OI fetch failed: %s", exc)
+            return {"oi_24h_pct": 0.0, "oi_now": 0.0, "ts_local": now}
+
+    def _fetch_ticker_price(self) -> Optional[float]:
+        """Live BTC/USD spot price.
+        Coinbase/Binance/Kraken are blocked from this network — use Coingecko
+        first (proven reachable), fall back to CryptoCompare."""
+        # Coingecko
+        try:
+            url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+            req = Request(url, headers={"Accept": "application/json", "User-Agent": "AIBtclaude/1.0"})
+            with urlopen(req, timeout=8, context=_SSL_CTX) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            p = data.get("bitcoin", {}).get("usd")
+            if p:
+                return float(p)
+        except Exception as exc:
+            logger.debug("Coingecko ticker failed: %s", exc)
+        # CryptoCompare fallback
+        try:
+            url = "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD"
+            req = Request(url, headers={"Accept": "application/json", "User-Agent": "AIBtclaude/1.0"})
+            with urlopen(req, timeout=8, context=_SSL_CTX) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            p = data.get("USD")
+            if p:
+                return float(p)
+        except Exception as exc:
+            logger.debug("CryptoCompare ticker failed: %s", exc)
+        return None
 
     def _fetch_public_bars(self, timeframe: str, limit: int) -> pd.DataFrame:
-        granularity = _PUBLIC_GRANULARITY[timeframe]
-        capped = min(limit, 300)
-        url = (
-            "https://api.exchange.coinbase.com/products/BTC-USD/candles"
-            f"?granularity={granularity}"
-        )
-        req = Request(
-            url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "AIBtclaude-demo/1.0",
-            },
-        )
+        """OHLCV bars via yfinance (Coinbase/Binance blocked from this network).
+        Falls back to CryptoCompare hist endpoints if yfinance fails."""
         try:
-            with urlopen(req, timeout=20) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except URLError as exc:
-            logger.error("Public market-data request failed for %s: %s", timeframe, exc)
-            return pd.DataFrame()
+            import yfinance as yf
+        except ImportError:
+            return self._fetch_cryptocompare_bars(timeframe, limit)
 
-        if not isinstance(payload, list) or not payload:
-            logger.warning("Empty public market-data payload for %s", timeframe)
-            return pd.DataFrame()
-
-        rows = []
-        for candle in payload[:capped]:
-            if len(candle) < 6:
-                continue
-            ts, low, high, open_, close, volume = candle[:6]
-            rows.append(
-                {
-                    "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc),
-                    "open": float(open_),
-                    "high": float(high),
-                    "low": float(low),
-                    "close": float(close),
-                    "volume": float(volume),
-                }
+        yf_params = {
+            "1Min":  {"interval": "1m",  "period": "5d"},
+            "5Min":  {"interval": "5m",  "period": "60d"},
+            "15Min": {"interval": "15m", "period": "60d"},
+            "1Hour": {"interval": "1h",  "period": "730d"},
+            "1Day":  {"interval": "1d",  "period": "max"},
+        }
+        params = yf_params.get(timeframe)
+        if not params:
+            return self._fetch_cryptocompare_bars(timeframe, limit)
+        try:
+            df = yf.download(
+                "BTC-USD",
+                interval=params["interval"],
+                period=params["period"],
+                progress=False, auto_adjust=False, prepost=False,
             )
+        except Exception as exc:
+            logger.error("yfinance BTC fetch failed for %s: %s", timeframe, exc)
+            return self._fetch_cryptocompare_bars(timeframe, limit)
 
+        if df is None or df.empty:
+            return self._fetch_cryptocompare_bars(timeframe, limit)
+        if hasattr(df.columns, "get_level_values"):
+            df.columns = df.columns.get_level_values(0)
+        df = df.rename(columns={"Open": "open", "High": "high", "Low": "low",
+                                "Close": "close", "Volume": "volume"})
+        cols = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
+        return df[cols].tail(limit)
+
+    def _fetch_cryptocompare_bars(self, timeframe: str, limit: int) -> pd.DataFrame:
+        """Fallback BTC/USD OHLCV via CryptoCompare (proven reachable)."""
+        cc_endpoints = {
+            "1Min":  ("histominute", 1),
+            "5Min":  ("histominute", 5),
+            "15Min": ("histominute", 15),
+            "1Hour": ("histohour", 1),
+            "1Day":  ("histoday", 1),
+        }
+        ep = cc_endpoints.get(timeframe)
+        if not ep:
+            return pd.DataFrame()
+        endpoint, agg = ep
+        capped = min(limit, 2000)
+        url = (
+            f"https://min-api.cryptocompare.com/data/v2/{endpoint}"
+            f"?fsym=BTC&tsym=USD&limit={capped}&aggregate={agg}"
+        )
+        req = Request(url, headers={"Accept": "application/json", "User-Agent": "AIBtclaude/1.0"})
+        try:
+            with urlopen(req, timeout=20, context=_SSL_CTX) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except (URLError, ssl.SSLError, OSError) as exc:
+            logger.error("CryptoCompare fetch failed for %s: %s", timeframe, exc)
+            return pd.DataFrame()
+        items = (payload or {}).get("Data", {}).get("Data", [])
+        if not items:
+            return pd.DataFrame()
+        rows = []
+        for r in items:
+            try:
+                rows.append({
+                    "timestamp": datetime.fromtimestamp(int(r["time"]), tz=timezone.utc),
+                    "open":   float(r["open"]),
+                    "high":   float(r["high"]),
+                    "low":    float(r["low"]),
+                    "close":  float(r["close"]),
+                    "volume": float(r.get("volumeto", 0) or 0),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
         if not rows:
             return pd.DataFrame()
-
-        df = pd.DataFrame(rows).sort_values("timestamp")
-        df = df.set_index("timestamp")
+        df = pd.DataFrame(rows).sort_values("timestamp").set_index("timestamp")
         return df.tail(limit)
 
     def _store_frame(self, timeframe: str, df: pd.DataFrame) -> None:

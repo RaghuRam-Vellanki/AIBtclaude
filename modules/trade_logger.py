@@ -22,9 +22,10 @@ class TradeLogger:
     Writes trade open/close records and post-trade reviews to JSON log.
     """
 
-    def __init__(self):
-        self._log_path = Path(LOG_FILE)
+    def __init__(self, log_file: Optional[Path] = None, asset: str = "BTC/USD"):
+        self._log_path = Path(log_file) if log_file is not None else Path(LOG_FILE)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._asset = asset
         self._trades: List[Dict[str, Any]] = self._load()
         self._open_trade: Optional[Dict[str, Any]] = None
 
@@ -42,7 +43,7 @@ class TradeLogger:
         record = {
             "trade_id":       trade_id,
             "alpaca_order_id": alpaca_order_id,
-            "asset":          "BTC/USD",
+            "asset":          self._asset,
             "date_time_open": datetime.now(timezone.utc).isoformat(),
             "date_time_close": None,
             "strategy":       signal.strategy,
