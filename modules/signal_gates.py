@@ -210,11 +210,13 @@ def grade_clusters(aligned: int, total: int,
                    smart_money_confirms: bool = True) -> str:
     """Map (aligned_clusters, total_clusters) → quality grade.
 
-    Plan-defined ladder (cluster-honest):
+    Cluster-honest ladder (smart-money is a bonus, not a hard B gate):
       A+  : ≥ 4 aligned clusters  (deep multi-archetype confluence)
       A   : ≥ 3 aligned clusters
-      B   : ≥ 2 aligned clusters AND smart-money cluster (FLOW or MOMENTUM)
-            confirms direction
+      B   : ≥ 2 aligned clusters
+      C   : 1 aligned cluster AND smart-money (FLOW or MOMENTUM) confirms
+            — lower-conviction, smaller-size signal so the dashboard
+            surfaces something instead of perma-NEUTRAL on quiet days.
       else: NO_TRADE
     """
     if total == 0:
@@ -223,8 +225,10 @@ def grade_clusters(aligned: int, total: int,
         return "A+"
     if aligned >= 3:
         return "A"
-    if aligned >= 2 and smart_money_confirms:
+    if aligned >= 2:
         return "B"
+    if aligned >= 1 and smart_money_confirms:
+        return "C"
     return "NO_TRADE"
 
 

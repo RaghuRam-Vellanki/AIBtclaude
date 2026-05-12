@@ -78,6 +78,19 @@ class RegimeHMMStrategy(StrategyAgent):
             regime = regime_label_map.get(last_state, "unknown")
             mean_return = float(ret_means[last_state])
 
+            # Absolute-vol guard: the highest-vol of three states is *always*
+            # labeled "chaos" by sort order, but on a quiet day that state's
+            # actual volatility may be mundane. Only treat it as chaos if its
+            # log_tr emission is at least 25 % above the trending state's —
+            # otherwise demote the label to "trending" (the broader sense of
+            # "we're moving" rather than "we're erratic").
+            if regime == "chaos":
+                trending_tr = float(tr_means[int(order_by_vol[1])])
+                chaos_tr    = float(tr_means[int(order_by_vol[2])])
+                # log_tr scale: 0.25 in log = ~28 % multiplicative gap
+                if (chaos_tr - trending_tr) < 0.25:
+                    regime = "trending"
+
             meta = {
                 "regime": regime,
                 "state_probability": round(state_prob, 3),

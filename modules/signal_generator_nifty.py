@@ -242,28 +242,34 @@ class NIFTYSignalGenerator:
         regime  = detect_regime(votes, htf_dir)
         active  = active_archetypes(regime)
 
-        # India VIX → chaos override (NIFTY-specific). High VIX = re-classify as
-        # chaos regardless of HMM, since intraday gamma blows out option-driven
-        # strategies' assumptions.
+        # India VIX → chaos override (NIFTY-specific). Above the hard threshold
+        # we still stand down; below it we let cluster path run with demoted grade.
         india_vix = float(snap.get("india_vix", 0) or 0)
+        vix_hard_block = india_vix > 28.0
         if india_vix > 22.0:
             regime = "chaos"
-            active = set()
 
-        if regime == "chaos" or not active:
+        if vix_hard_block:
             return TradeSignal(
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 asset="NIFTY 50", bias="NEUTRAL",
-                strategy=(f"India VIX {india_vix:.1f} >22 — stand down" if india_vix > 22.0
-                          else f"Regime={regime} — stand down"),
+                strategy=f"India VIX {india_vix:.1f} >28 — hard stand down",
                 signal_quality="NO_TRADE", signal_score="0/0",
-                entry_price=0.0, stop_loss=0.0,
-                take_profit_1=0.0, take_profit_2=0.0, take_profit_3=0.0,
-                invalidation="Regime exits chaos / VIX cools",
-                funding_check=f"Regime={regime} | BLOCK",
-                etf_flow_check="FII/DII proxy | Neutral",
-                session=snap.get("current_session", ""),
-                vwap_distance=f"₹{snap.get('vwap_distance', 0):+.2f} from VWAP",
+                invalidation="VIX cools below 28",
+                funding_check=f"VIX {india_vix:.1f} | HARD BLOCK",
+                raw_response=_format_pod_summary(votes, fallback_reason),
+            )
+
+        chaos_mode = (regime == "chaos")
+        if chaos_mode:
+            active = None  # no archetype filter — demote grade after
+        elif not active:
+            return TradeSignal(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                asset="NIFTY 50", bias="NEUTRAL",
+                strategy=f"No active archetypes in regime={regime}",
+                signal_quality="NO_TRADE", signal_score="0/0",
+                funding_check=f"Regime={regime} | NO ARCHETYPES",
                 raw_response=_format_pod_summary(votes, fallback_reason),
             )
 
@@ -288,6 +294,9 @@ class NIFTYSignalGenerator:
         smart_agrees = smart_money_aligned(winners, is_long)
         quality = grade_clusters(aligned, total_clusters,
                                  smart_money_confirms=smart_agrees)
+
+        if chaos_mode:
+            quality = {"A+": "A", "A": "B", "B": "C", "C": "NO_TRADE"}.get(quality, quality)
 
         # FII/DII override: if fii_dii_flow votes opposite with confidence ≥ 0.66, downgrade.
         # We keep this as a dedicated check because FLOW cluster may have been
@@ -344,7 +353,7 @@ class NIFTYSignalGenerator:
                 raw_response=_format_pod_summary(votes, fallback_reason),
             )
 
-        risk_pct = {"A+": 1.0, "A": 0.75, "B": 0.5}.get(quality, 0.5)
+        risk_pct = {"A+": 1.0, "A": 0.75, "B": 0.5, "C": 0.25}.get(quality, 0.5)
 
         primary = winners.get("MOMENTUM") or winners.get("FLOW") or winners.get("OPTIONS")
         if primary is None or primary.direction != ("LONG" if is_long else "SHORT"):

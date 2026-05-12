@@ -203,14 +203,16 @@ class BTCSignalGenerator:
         regime  = detect_regime(votes, htf_dir)
         active  = active_archetypes(regime)
 
-        if regime == "chaos" or not active:
+        chaos_mode = (regime == "chaos")
+        if chaos_mode:
+            active = None  # no archetype filter — demote grade instead
+        elif not active:
             return TradeSignal(
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 asset="BTC/USD", bias="NEUTRAL",
-                strategy=f"Regime={regime} — stand down",
+                strategy=f"No active archetypes in regime={regime}",
                 signal_quality="NO_TRADE", signal_score="0/0",
-                invalidation="Regime exits chaos",
-                funding_check=f"Regime={regime} | BLOCK",
+                funding_check=f"Regime={regime} | NO ARCHETYPES",
                 raw_response=_format_pod_summary(votes, fallback_reason),
             )
 
@@ -235,6 +237,9 @@ class BTCSignalGenerator:
         smart_agrees = smart_money_aligned(winners, is_long)
         quality = grade_clusters(aligned, total_clusters,
                                  smart_money_confirms=smart_agrees)
+
+        if chaos_mode:
+            quality = {"A+": "A", "A": "B", "B": "C", "C": "NO_TRADE"}.get(quality, quality)
 
         # ── Phase-1: BTC funding gate ──
         # Block direction when funding is extreme + same direction (you'd be

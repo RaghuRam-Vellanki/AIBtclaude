@@ -240,20 +240,21 @@ class XAUSignalGenerator:
         regime  = detect_regime(votes, htf_dir)        # 'trend' | 'range' | 'chaos'
         active  = active_archetypes(regime)            # archetypes allowed to vote
 
-        if regime == "chaos" or not active:
+        # chaos: don't hard-block — let cluster path run with all archetypes
+        # active, then demote final quality by one rung. Lets A+/A confluence
+        # still fire (at B), and gates the noise without going perma-NEUTRAL.
+        chaos_mode = (regime == "chaos")
+        if chaos_mode:
+            active = None  # no regime filter — let all archetypes vote, then demote grade
+        elif not active:
             return TradeSignal(
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 asset="XAU/USD", bias="NEUTRAL",
-                strategy="HMM regime=chaos — stand down",
+                strategy=f"No active archetypes in regime={regime}",
                 signal_quality="NO_TRADE",
                 signal_score="0/0",
-                entry_price=0.0, stop_loss=0.0,
-                take_profit_1=0.0, take_profit_2=0.0, take_profit_3=0.0,
-                invalidation="Regime exits chaos",
-                funding_check=f"Regime={regime} | BLOCK",
-                etf_flow_check="COT proxy | Neutral",
-                session=snap.get("current_session", ""),
-                vwap_distance=f"${snap.get('vwap_distance', 0):+.2f} from VWAP",
+                invalidation="Regime shifts to allow active archetypes",
+                funding_check=f"Regime={regime} | NO ARCHETYPES",
                 raw_response=_format_pod_summary(votes, fallback_reason),
             )
 
@@ -286,6 +287,10 @@ class XAUSignalGenerator:
         smart_agrees = smart_money_aligned(winners_long, is_long)
         quality = grade_clusters(aligned, total_clusters,
                                  smart_money_confirms=smart_agrees)
+
+        # Chaos demotion: one rung down.
+        if chaos_mode:
+            quality = {"A+": "A", "A": "B", "B": "C", "C": "NO_TRADE"}.get(quality, quality)
 
         # Macro override: if macro_flow votes opposite with ≥0.66 confidence, downgrade
         macro_vote = next((v for v in votes if v.name == "macro_flow"), None)
@@ -341,7 +346,7 @@ class XAUSignalGenerator:
                 raw_response=_format_pod_summary(votes, fallback_reason),
             )
 
-        risk_pct = {"A+": 1.0, "A": 0.75, "B": 0.5}.get(quality, 0.5)
+        risk_pct = {"A+": 1.0, "A": 0.75, "B": 0.5, "C": 0.25}.get(quality, 0.5)
 
         # Strategy text: name the leading cluster (not just the highest vote),
         # so the user sees which archetype actually drove the call.

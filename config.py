@@ -56,7 +56,7 @@ ATR_REDUCE_50_THRESHOLD  = 3500   # daily ATR > $3 500 → 50 % size reduction
 # Volatility-aware stop placement: SL = entry ± k·ATR(14) where k scales by
 # signal grade. Floor on TP1 R-multiple kills sub-2:1 trades that need >67%
 # win-rate to break even after fees.
-ATR_K_BY_QUALITY = {"A+": 2.5, "A": 2.0, "B": 1.5}
+ATR_K_BY_QUALITY = {"A+": 2.5, "A": 2.0, "B": 1.5, "C": 1.25}
 MIN_RR_T1 = 2.0                   # reject signal if TP1 < 2.0R from entry
 
 # BTC perpetual funding-rate gates (Binance fapi premiumIndex; 8h interval)
