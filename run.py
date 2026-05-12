@@ -88,7 +88,7 @@ def _self_check() -> bool:
 def _start_dashboard(port: int) -> None:
     """Dashboard imports and starts all 3 agents internally; serves UI at /."""
     print("=" * 64)
-    print(f"  Multi-Asset Trading Dashboard  →  http://localhost:{port}")
+    print(f"  Multi-Asset Trading Dashboard  ->  http://localhost:{port}")
     print("  Assets: BTC (Alpaca live, demo-safe) | XAU (paper-sim pod)")
     print("          NIFTY 50 (paper-sim pod)")
     print("  Strategies: 9 XAU | 7 BTC | 12 NIFTY (cluster-aware)")
