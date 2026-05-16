@@ -76,6 +76,34 @@ class MomentumMacroStrategy(StrategyAgent):
                     },
                 )
 
+            # Whisper-grade: 4H trending and price on the same side of VWAP
+            # (without the +buffer confirmation). Lets the trend cluster still
+            # surface a directional lean on consolidating bars.
+            whisper_up   = (h4_struct == "uptrend"   and price >= vwap)
+            whisper_down = (h4_struct == "downtrend" and price <= vwap)
+            if whisper_up:
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction="LONG", confidence=0.30,
+                    rationale=(
+                        f"Whisper: 4H=uptrend, price ${price:,.2f} ≥ VWAP "
+                        f"${vwap:,.2f} (sub-buffer)"
+                    ),
+                    metadata={"h4_structure": h4_struct, "h1_structure": h1_struct,
+                              "vwap_distance": round(price - vwap, 2), "whisper": True},
+                )
+            if whisper_down:
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction="SHORT", confidence=0.30,
+                    rationale=(
+                        f"Whisper: 4H=downtrend, price ${price:,.2f} ≤ VWAP "
+                        f"${vwap:,.2f} (sub-buffer)"
+                    ),
+                    metadata={"h4_structure": h4_struct, "h1_structure": h1_struct,
+                              "vwap_distance": round(price - vwap, 2), "whisper": True},
+                )
+
             return self._neutral(
                 f"4H={h4_struct}, 1H={h1_struct}, no VWAP alignment",
                 h4_structure=h4_struct, h1_structure=h1_struct,

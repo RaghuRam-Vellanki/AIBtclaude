@@ -28,6 +28,7 @@ from typing import Optional
 from config import (
     ANALYSIS_INTERVAL_SECONDS, DEMO_MODE, PAPER_MODE, SYMBOL,
     REQUIRE_APPROVAL, APPROVAL_TIMEOUT_SEC, PENDING_FILE, BOT_PID_FILE,
+    MAX_HOLD_HOURS_DEFAULT,
 )
 from modules.data_feed import DataFeed
 from modules.order_manager import OrderManager
@@ -115,6 +116,7 @@ class BTCTradingAgent:
         self._active_trade_id:    Optional[str] = None
         self._active_order_id:    Optional[str] = None
         self._active_signal:      Optional[TradeSignal] = None
+        self._active_signal_opened_ts: float = 0.0
         self._last_signal:        Optional[TradeSignal] = None   # persists after skip/close
         self._running             = True
         self._analyzing_until     = 0.0   # epoch deadline; while > now, _write_state reports "analyzing"
@@ -282,16 +284,18 @@ class BTCTradingAgent:
             # the (now-overridden) entry/SL — the trade-zone overlay needs them.
             risk = abs(signal.entry_price - signal.stop_loss)
             if risk > 0:
+                # R-multiples 2/3/4.5 — matches XAU/NIFTY spec and ensures
+                # TP1 meets the 2:1 R:R floor for sustainable expectancy.
                 if signal.bias == "BULLISH":
-                    if not signal.take_profit_1: signal.take_profit_1 = round(signal.entry_price + 1.5 * risk, 2)
-                    if not signal.take_profit_2: signal.take_profit_2 = round(signal.entry_price + 2.5 * risk, 2)
+                    if not signal.take_profit_1: signal.take_profit_1 = round(signal.entry_price + 2.0 * risk, 2)
+                    if not signal.take_profit_2: signal.take_profit_2 = round(signal.entry_price + 3.0 * risk, 2)
                     if not getattr(signal, "take_profit_3", 0):
-                        signal.take_profit_3 = round(signal.entry_price + 3.5 * risk, 2)
+                        signal.take_profit_3 = round(signal.entry_price + 4.5 * risk, 2)
                 else:
-                    if not signal.take_profit_1: signal.take_profit_1 = round(signal.entry_price - 1.5 * risk, 2)
-                    if not signal.take_profit_2: signal.take_profit_2 = round(signal.entry_price - 2.5 * risk, 2)
+                    if not signal.take_profit_1: signal.take_profit_1 = round(signal.entry_price - 2.0 * risk, 2)
+                    if not signal.take_profit_2: signal.take_profit_2 = round(signal.entry_price - 3.0 * risk, 2)
                     if not getattr(signal, "take_profit_3", 0):
-                        signal.take_profit_3 = round(signal.entry_price - 3.5 * risk, 2)
+                        signal.take_profit_3 = round(signal.entry_price - 4.5 * risk, 2)
 
             logger.info(
                 "Signal: %s | Quality: %s | Entry: $%.2f | SL: $%.2f (5%% override) | TP1/2/3: %.2f / %.2f / %.2f",
@@ -377,6 +381,7 @@ class BTCTradingAgent:
         self._active_trade_id = trade_id
         self._active_order_id = order_id
         self._active_signal   = signal
+        self._active_signal_opened_ts = time.time()
 
         logger.info("Trade opened: %s | Order: %s", trade_id, order_id)
         self._write_state()
@@ -384,7 +389,10 @@ class BTCTradingAgent:
     # ── Position monitoring ───────────────────────────────────────────────────
 
     def _monitor_position(self, current_price: float) -> None:
-        """Check if current price has hit SL, TP1, or invalidation."""
+        """Check SL, TP1, and max_hold_time. Phase 1.2 spec: BTC trades on a
+        live broker so partial scale-out at TP2/TP3 is a Phase-5 enhancement;
+        for now TP1-hit closes 100% but we DO enforce max_hold_time so a
+        Friday-3pm trade can't sit open through the weekend."""
         if not self._active_signal:
             return
 
@@ -400,10 +408,29 @@ class BTCTradingAgent:
         if sl_hit:
             logger.warning("STOP LOSS HIT at $%.2f", current_price)
             self._close_trade(current_price, reason="stop_loss")
+            return
 
-        elif tp1_hit:
+        if tp1_hit:
             logger.info("TAKE PROFIT 1 HIT at $%.2f", current_price)
             self._close_trade(current_price, reason="tp1")
+            return
+
+        # Max-hold enforcement (Phase 1.2 spec). Parse the first integer out
+        # of strings like "8 hours" / "4-12 hours" — falls back to config default.
+        if self._active_signal_opened_ts > 0:
+            max_hold_str = getattr(sig, "max_hold_time", "") or ""
+            hours = MAX_HOLD_HOURS_DEFAULT
+            import re as _re
+            m = _re.search(r"(\d+)", max_hold_str)
+            if m:
+                try:
+                    hours = float(m.group(1))
+                except ValueError:
+                    pass
+            if (time.time() - self._active_signal_opened_ts) > hours * 3600.0:
+                logger.warning("MAX HOLD %s reached at $%.2f — closing at market",
+                               max_hold_str or f"{hours:.0f}h", current_price)
+                self._close_trade(current_price, reason="EXIT_TIME")
 
     def _close_trade(self, exit_price: float, reason: str = "") -> None:
         """Close position and record the result."""
@@ -445,6 +472,7 @@ class BTCTradingAgent:
         self._active_trade_id = None
         self._active_order_id = None
         self._active_signal   = None
+        self._active_signal_opened_ts = 0.0
         self._write_state()
 
     # ── Snapshot builder ──────────────────────────────────────────────────────

@@ -104,6 +104,20 @@ class VolatilityRegimeStrategy(StrategyAgent):
                     **meta,
                 )
 
+            # Whisper-grade: IV/HV ≥ 1.15 (premium overpriced but below the
+            # strong-vote threshold of 1.4) — small vol-crush lean.
+            if ratio >= 1.15:
+                whisper_dir = "SHORT" if self.asset == "BTC" else "LONG"
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction=whisper_dir, confidence=0.25,
+                    rationale=(
+                        f"Whisper: IV/HV={ratio:.2f} mild premium (IV={iv:.1f}, "
+                        f"HV={hv_annualised:.1f}) — small vol-crush lean"
+                    ),
+                    metadata={**meta, "whisper": True},
+                )
+
             return self._neutral(
                 f"IV/HV={ratio:.2f} in normal band (no edge)",
                 **meta,

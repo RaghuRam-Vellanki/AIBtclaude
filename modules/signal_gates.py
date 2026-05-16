@@ -82,12 +82,16 @@ def compute_atr_stops(
 
 def meets_rr_floor(entry: float, sl: float, tp1: float,
                    floor: float = MIN_RR_T1) -> bool:
-    """Reject if TP1 reward / SL risk < floor. Symmetric for LONG/SHORT."""
+    """Reject if TP1 reward / SL risk < floor. Symmetric for LONG/SHORT.
+
+    The ratio is rounded to 2dp before comparison because compute_atr_stops
+    rounds SL/TP1 to 2dp, so an exact 2.0R configuration measured at the
+    rounded levels can come out as 1.9999… and falsely fail the floor."""
     risk = abs(entry - sl)
     if risk <= 0:
         return False
     reward = abs(tp1 - entry)
-    return (reward / risk) >= floor
+    return round(reward / risk, 2) >= floor
 
 
 # ── Event blackout (thin wrapper for symmetric API) ────────────────────────────

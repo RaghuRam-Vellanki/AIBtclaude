@@ -103,6 +103,30 @@ class SessionVolumeStrategy(StrategyAgent):
             }
 
             if mult < threshold:
+                # Whisper-grade: 0.7×threshold ≤ mult < threshold AND a
+                # directional close still emits a small vote — sub-strong
+                # but worth surfacing on quiet sessions.
+                if mult >= 0.7 * threshold:
+                    if bullish_close:
+                        return StrategyVote(
+                            name=self.name, inspired_by=self.inspired_by,
+                            direction="LONG", confidence=0.25,
+                            rationale=(
+                                f"Whisper: {session} {mult:.1f}× vol (sub-{threshold}×) "
+                                f"with bullish close at {close_pos:.0%}"
+                            ),
+                            metadata={**meta, "whisper": True},
+                        )
+                    if bearish_close:
+                        return StrategyVote(
+                            name=self.name, inspired_by=self.inspired_by,
+                            direction="SHORT", confidence=0.25,
+                            rationale=(
+                                f"Whisper: {session} {mult:.1f}× vol (sub-{threshold}×) "
+                                f"with bearish close at {close_pos:.0%}"
+                            ),
+                            metadata={**meta, "whisper": True},
+                        )
                 return self._neutral(
                     f"Volume {mult:.1f}× < {threshold}× ({session} session) — no signal",
                     **meta,

@@ -24,6 +24,8 @@ from config import (
     BTC_POD_REPORT_FILE,
     GROQ_API_KEY,
     GROQ_MODEL,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
     STOP_LOSS_PCT,
     SKILL_FILE,
 )
@@ -111,9 +113,38 @@ class BTCSignalGenerator:
                     )
                     return det
             return sig
-        except Exception as exc:
-            logger.warning("Groq BTC call failed (%s) — deterministic fallback", exc)
-            return self._deterministic_signal(votes, market_snapshot, fallback_reason=str(exc))
+        except Exception as groq_exc:
+            logger.warning("Groq BTC call failed (%s)", groq_exc)
+            if OPENAI_API_KEY:
+                try:
+                    from openai import OpenAI
+                    logger.info("Falling back to OpenAI %s for BTC decision", OPENAI_MODEL)
+                    oai = OpenAI(api_key=OPENAI_API_KEY)
+                    oai_resp = oai.chat.completions.create(
+                        model=OPENAI_MODEL,
+                        max_tokens=1500,
+                        temperature=0.2,
+                        messages=[
+                            {"role": "system", "content": self._skill or _SYSTEM_PROMPT},
+                            {"role": "user",   "content": user_message},
+                        ],
+                    )
+                    raw = oai_resp.choices[0].message.content or ""
+                    sig = self._parse_groq_block(raw, market_snapshot, votes)
+                    sig.raw_response = "[OpenAI fallback, Groq 429]\n" + raw
+                    sig.asset = "BTC/USD"
+                    if sig.signal_quality == "NO_TRADE" or sig.bias == "NEUTRAL":
+                        det = self._deterministic_signal(votes, market_snapshot,
+                                                          fallback_reason="OpenAI returned NO_TRADE")
+                        if det.signal_quality != "NO_TRADE" and det.bias in ("BULLISH", "BEARISH"):
+                            return det
+                    return sig
+                except Exception as oai_exc:
+                    logger.warning("OpenAI BTC fallback also failed (%s)", oai_exc)
+            return self._deterministic_signal(
+                votes, market_snapshot,
+                fallback_reason=f"Groq: {groq_exc} | OpenAI: skipped/failed",
+            )
 
     # ── Pod fan-out ──────────────────────────────────────────────────────────
 

@@ -22,6 +22,8 @@ from groq import Groq
 from config import (
     GROQ_API_KEY,
     GROQ_MODEL,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
     XAU_POD_REPORT_FILE,
     XAU_SKILL_FILE,
     XAU_STOP_LOSS_PCT,
@@ -114,9 +116,38 @@ class XAUSignalGenerator:
                     return det
 
             return signal
-        except Exception as exc:
-            logger.warning("Groq XAU call failed (%s) — falling back to deterministic aggregator", exc)
-            return self._deterministic_signal(votes, market_snapshot, fallback_reason=str(exc))
+        except Exception as groq_exc:
+            logger.warning("Groq XAU call failed (%s)", groq_exc)
+            if OPENAI_API_KEY:
+                try:
+                    from openai import OpenAI
+                    logger.info("Falling back to OpenAI %s for XAU decision", OPENAI_MODEL)
+                    oai = OpenAI(api_key=OPENAI_API_KEY)
+                    oai_resp = oai.chat.completions.create(
+                        model=OPENAI_MODEL,
+                        max_tokens=2048,
+                        temperature=0.2,
+                        messages=[
+                            {"role": "system", "content": self._skill or _SYSTEM_PROMPT},
+                            {"role": "user",   "content": user_message},
+                        ],
+                    )
+                    raw = oai_resp.choices[0].message.content or ""
+                    signal = self._parse_signal(raw)
+                    signal.raw_response = "[OpenAI fallback, Groq 429]\n" + raw
+                    signal.asset = "XAU/USD"
+                    if signal.signal_quality == "NO_TRADE" or signal.bias == "NEUTRAL":
+                        det = self._deterministic_signal(votes, market_snapshot,
+                                                          fallback_reason="OpenAI returned NO_TRADE")
+                        if det.signal_quality != "NO_TRADE" and det.bias in ("BULLISH", "BEARISH"):
+                            return det
+                    return signal
+                except Exception as oai_exc:
+                    logger.warning("OpenAI XAU fallback also failed (%s)", oai_exc)
+            return self._deterministic_signal(
+                votes, market_snapshot,
+                fallback_reason=f"Groq: {groq_exc} | OpenAI: skipped/failed",
+            )
 
     # ── Pod fan-out ───────────────────────────────────────────────────────────
 

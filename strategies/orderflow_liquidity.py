@@ -155,6 +155,31 @@ class OrderflowLiquidityStrategy(StrategyAgent):
                     metadata=meta,
                 )
 
+            # Whisper-grade: half-sweep proximity (within 50% of full sweep
+            # threshold) with confirming wick — sub-threshold absorption hint.
+            half_sweep_pdl = (l <= pdl * (1 - ORDERFLOW_SWEEP_PCT * 0.5)) and c > pdl
+            half_sweep_pdh = (h >= pdh * (1 + ORDERFLOW_SWEEP_PCT * 0.5)) and c < pdh
+            if half_sweep_pdl and lower_wick_ratio >= 0.4:
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction="LONG", confidence=0.30,
+                    rationale=(
+                        f"Whisper: near-PDL liquidity grab (low {l:.2f} vs PDL "
+                        f"{pdl:.2f}, lower-wick {lower_wick_ratio:.0%})"
+                    ),
+                    metadata={**meta, "whisper": True},
+                )
+            if half_sweep_pdh and upper_wick_ratio >= 0.4:
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction="SHORT", confidence=0.30,
+                    rationale=(
+                        f"Whisper: near-PDH liquidity grab (high {h:.2f} vs PDH "
+                        f"{pdh:.2f}, upper-wick {upper_wick_ratio:.0%})"
+                    ),
+                    metadata={**meta, "whisper": True},
+                )
+
             return self._neutral(
                 f"No PDH/PDL sweep with absorption (pdh={pdh:.2f}, pdl={pdl:.2f})",
                 **meta,

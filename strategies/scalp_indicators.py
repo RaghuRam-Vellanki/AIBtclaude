@@ -183,6 +183,28 @@ class ScalpIndicatorsStrategy(StrategyAgent):
                     metadata=meta,
                 )
 
+            # Whisper-grade: 2-of-4 alignment (one short of the strong-vote threshold).
+            if longs == 2 and longs > shorts:
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction="LONG", confidence=0.30,
+                    rationale=(
+                        f"Whisper: 2/4 LONG (EMA={signals['ema']}, BB={signals['bb']}, "
+                        f"Stoch={signals['stoch']}, RSI={signals['rsi']})"
+                    ),
+                    metadata={**meta, "whisper": True},
+                )
+            if shorts == 2 and shorts > longs:
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction="SHORT", confidence=0.30,
+                    rationale=(
+                        f"Whisper: 2/4 SHORT (EMA={signals['ema']}, BB={signals['bb']}, "
+                        f"Stoch={signals['stoch']}, RSI={signals['rsi']})"
+                    ),
+                    metadata={**meta, "whisper": True},
+                )
+
             return self._neutral(
                 f"Scalp confluence weak (L={longs} S={shorts}, need ≥{SCALP_MIN_ALIGNED})",
                 **meta,

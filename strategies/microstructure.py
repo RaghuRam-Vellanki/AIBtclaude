@@ -90,6 +90,23 @@ class MicrostructureStrategy(StrategyAgent):
                     metadata={"zscore": round(zscore, 2), "wick_imbalance": round(mean_wick, 2)},
                 )
 
+            # Whisper-grade fade: |Z|≥0.3 with confirming wick tilt → low-conf vote
+            # so the cluster aggregator has something to align on quiet days.
+            if abs(zscore) >= 0.3:
+                wick_agrees = (zscore < 0 and mean_wick < 0) or (zscore > 0 and mean_wick > 0)
+                whisper = round(0.15 + min(0.20, abs(zscore) * 0.10) + (0.05 if wick_agrees else 0.0), 2)
+                direction = "LONG" if zscore < 0 else "SHORT"
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction=direction, confidence=whisper,
+                    rationale=(
+                        f"Whisper: Z={zscore:+.2f}σ from VWAP "
+                        f"(wick {mean_wick:+.2f}) — sub-threshold fade"
+                    ),
+                    metadata={"zscore": round(zscore, 2), "wick_imbalance": round(mean_wick, 2),
+                              "whisper": True},
+                )
+
             return self._neutral(
                 f"Z={zscore:+.2f}σ from VWAP, wick imbalance {mean_wick:+.2f} — no edge",
                 zscore=round(zscore, 2),

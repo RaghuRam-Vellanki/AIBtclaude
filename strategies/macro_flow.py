@@ -73,6 +73,23 @@ class MacroFlowStrategy(StrategyAgent):
                 direction = "LONG"
             elif composite == -1 and ry_score < 0:
                 direction = "SHORT"
+            elif ry_score != 0 or dxy_score != 0:
+                # Whisper-grade: at least one leg has a directional lean even
+                # though the composite didn't reach the strong-vote threshold.
+                # Tie-break by ry_score (dominant macro driver), else dxy.
+                sign = ry_score if ry_score != 0 else dxy_score
+                whisper_dir = "LONG" if sign > 0 else "SHORT"
+                return self._vote(
+                    direction=whisper_dir,
+                    confidence=0.22,
+                    rationale=(
+                        f"Whisper: composite {composite:+d} "
+                        f"(real-Y {real_lvl:+.2f}% Δ{real_dbp:+.1f}bp/5d, "
+                        f"DXY {dxy_detail['slope']})"
+                    ),
+                    composite=composite, real_yield=real, ry_score=ry_score,
+                    dxy=dxy_detail, tnx=tnx_detail, cot=cot_detail, whisper=True,
+                )
             else:
                 return self._neutral(
                     f"Macro composite {composite:+d} — flat",

@@ -121,6 +121,30 @@ class VWAPBanditStrategy(StrategyAgent):
                     metadata=meta,
                 )
 
+            # Whisper-grade: persistent VWAP offset outside the accumulation
+            # band but with |Z| ≥ 0.5 and the broader hold-low/hold-high
+            # property — early read on accumulation/distribution.
+            if cur_z <= -0.5 and holds_low:
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction="LONG", confidence=0.25,
+                    rationale=(
+                        f"Whisper: Z={cur_z:+.2f} below VWAP with no fresh low "
+                        f"(pre-accumulation lean)"
+                    ),
+                    metadata={**meta, "whisper": True},
+                )
+            if cur_z >= 0.5 and holds_high:
+                return StrategyVote(
+                    name=self.name, inspired_by=self.inspired_by,
+                    direction="SHORT", confidence=0.25,
+                    rationale=(
+                        f"Whisper: Z={cur_z:+.2f} above VWAP with no fresh high "
+                        f"(pre-distribution lean)"
+                    ),
+                    metadata={**meta, "whisper": True},
+                )
+
             return self._neutral(
                 f"No sustained accumulation/distribution (last Z={cur_z:+.2f})",
                 **meta,
